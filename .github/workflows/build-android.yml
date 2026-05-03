@@ -26,12 +26,18 @@ jobs:
 
       - name: Create local.properties
         run: touch local.properties
-        
+
       - name: Build Android Debug APK
         run: ./gradlew :composeApp:assembleDebug
 
-      - name: Upload APK artifact
+      - name: Upload Full Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: composeApp/build/outputs/apk/**/*.apk
+          name: app-full-debug
+          path: composeApp/build/outputs/apk/full/debug/*.apk
+
+      - name: Upload Playstore Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-playstore-debug
+          path: composeApp/build/outputs/apk/playstore/debug/*.apk
