@@ -10,6 +10,7 @@ import com.nuvio.app.core.i18n.localizedMediaTypeLabel
 import com.nuvio.app.features.home.HomeCatalogSection
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.stableKey
+import com.nuvio.app.features.trakt.TraktPublicListSourceResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -140,16 +141,38 @@ object FolderDetailRepository {
                             source = source,
                             type = type,
                             catalogId = tmdbCatalogId(source),
-                            supportsPagination = source.tmdbSourceType != TmdbCollectionSourceType.COLLECTION.name,
+                            supportsPagination = source.tmdbSourceType !in setOf(
+                                TmdbCollectionSourceType.COLLECTION.name,
+                                TmdbCollectionSourceType.PERSON.name,
+                                TmdbCollectionSourceType.DIRECTOR.name,
+                            ),
+                            isLoading = true,
+                        ),
+                    )
+                } else if (source.isTrakt) {
+                    val mediaType = TmdbCollectionMediaType.fromString(source.mediaType)
+                    val type = if (mediaType == TmdbCollectionMediaType.TV) "series" else "movie"
+                    val typeLabel = if (mediaType == TmdbCollectionMediaType.TV) {
+                        "Trakt Series List"
+                    } else {
+                        "Trakt Movie List"
+                    }
+                    add(
+                        FolderTab(
+                            label = source.title?.takeIf { it.isNotBlank() } ?: "Trakt",
+                            typeLabel = typeLabel,
+                            source = source,
+                            type = type,
+                            catalogId = traktCatalogId(source),
+                            supportsPagination = true,
                             isLoading = true,
                         ),
                     )
                 } else {
                     val catalogSource = source.addonCatalogSource() ?: return@forEach
-                    val addon = addons.find { it.manifest?.id == catalogSource.addonId }
-                    val catalog = addon?.manifest?.catalogs?.find {
-                        it.id == catalogSource.catalogId && it.type == catalogSource.type
-                    }
+                    val resolvedCatalog = addons.findCollectionCatalog(catalogSource)
+                    val addon = resolvedCatalog?.addon
+                    val catalog = resolvedCatalog?.catalog
                     val label = catalog?.name ?: catalogSource.catalogId
                     val typeLabel = localizedMediaTypeLabel(catalogSource.type)
                     val genreSuffix = if (catalogSource.genre != null) " · ${catalogSource.genre}" else ""
@@ -184,8 +207,8 @@ object FolderDetailRepository {
         sources.forEachIndexed { sourceIndex, source ->
             val tabIndex = if (showAll) sourceIndex + 1 else sourceIndex
             val catalogSource = source.addonCatalogSource()
-            val addon = catalogSource?.let { value -> addons.find { it.manifest?.id == value.addonId } }
-            if (!source.isTmdb && addon == null) {
+            val resolvedCatalog = catalogSource?.let { addons.findCollectionCatalog(it) }
+            if (!source.isTmdb && !source.isTrakt && resolvedCatalog == null) {
                 updateTab(tabIndex) {
                     it.copy(
                         isLoading = false,
@@ -251,7 +274,12 @@ object FolderDetailRepository {
     private fun loadTabPage(index: Int, reset: Boolean) {
         val currentTab = _uiState.value.tabs.getOrNull(index) ?: return
         val requestedSkip = if (reset) 0 else currentTab.nextSkip ?: return
-        if (!currentTab.source?.isTmdb.orFalse() && currentTab.manifestUrl == null) return
+        val currentSource = currentTab.source
+        if (
+            currentSource?.isTmdb != true &&
+            currentSource?.isTrakt != true &&
+            currentTab.manifestUrl == null
+        ) return
 
         updateTab(index) { tab ->
             if (reset) {
@@ -274,13 +302,18 @@ object FolderDetailRepository {
         val job = scope.launch {
             runCatching {
                 val source = currentTab.source
-                if (source?.isTmdb == true) {
-                    TmdbCollectionSourceResolver.resolve(
+                when {
+                    source?.isTmdb == true -> TmdbCollectionSourceResolver.resolve(
                         source = source,
                         page = if (reset) 1 else requestedSkip,
                     )
-                } else {
-                    fetchCatalogPage(
+
+                    source?.isTrakt == true -> TraktPublicListSourceResolver.resolve(
+                        source = source,
+                        page = if (reset) 1 else requestedSkip,
+                    )
+
+                    else -> fetchCatalogPage(
                         manifestUrl = requireNotNull(currentTab.manifestUrl),
                         type = currentTab.type,
                         catalogId = currentTab.catalogId,
@@ -396,3 +429,13 @@ private fun tmdbCatalogId(source: CollectionSource): String =
         append("_")
         append(source.mediaType?.lowercase().orEmpty())
     }
+
+private fun traktCatalogId(source: CollectionSource): String =
+    listOf(
+        "trakt",
+        "list",
+        source.traktListId?.toString().orEmpty(),
+        source.mediaType?.lowercase().orEmpty(),
+        TraktListSort.normalize(source.sortBy),
+        TraktSortHow.normalize(source.sortHow),
+    ).joinToString("_")
